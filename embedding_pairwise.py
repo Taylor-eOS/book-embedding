@@ -1,16 +1,16 @@
 import pysbd
-import numpy as np
 from sentence_transformers import SentenceTransformer
+import json
 
 input_path = "input.txt"
-report_path = "report.txt"
+report_path = "report.json"
 model_name = "Qwen/Qwen3-Embedding-0.6B"
 language = "en"
 BATCH_SIZE = 16
 SENTENCE_DISTANCE = 1
 NUM_RESULTS = 10
+REPORT_RESULTS = 200
 PRINTED_CONTEXT = 80
-REPORT_CONTEXT = 300
 
 def load_sentences():
     with open(input_path, "r", encoding="utf-8") as f:
@@ -41,21 +41,12 @@ def print_top_pairs(pairs, sentences):
         print(f"          [{j}] {sentences[j][:PRINTED_CONTEXT]}\n")
 
 def write_report(pairs, sentences):
-    scores = np.array([p[0] for p in pairs])
+    data = [
+        {"score": round(score, 4), "sentence_a": sentences[i], "sentence_b": sentences[j]}
+        for score, i, j in pairs[:REPORT_RESULTS]
+    ]
     with open(report_path, "w", encoding="utf-8") as f:
-        f.write("Embedding pairwise similarity report\n")
-        f.write(f"Input file: {input_path}\n")
-        f.write(f"Model: {model_name}\n")
-        f.write(f"Sentences: {len(sentences)}\n")
-        f.write(f"Pairs compared: {len(pairs)}\n")
-        f.write(f"Similarity min/mean/max: {scores.min():.4f} / {scores.mean():.4f} / {scores.max():.4f}\n")
-        f.write("\nFull sentence list:\n")
-        for idx, s in enumerate(sentences):
-            f.write(f"[{idx}] {s}\n")
-        f.write("\nAll pairs, sorted by similarity (descending):\n\n")
-        for score, i, j in pairs:
-            f.write(f"{score:.4f}  [{i}] {sentences[i][:REPORT_CONTEXT]}\n")
-            f.write(f"          [{j}] {sentences[j][:REPORT_CONTEXT]}\n\n")
+        json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Report file created: {report_path}")
 
 def main():
