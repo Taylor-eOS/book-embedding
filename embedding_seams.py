@@ -1,0 +1,108 @@
+import os
+import numpy as np
+import ruptures as rpt
+from embedding_cache import get_segments_and_embeddings
+
+MIN_SEGMENT_SIZE = 2
+EXPLORATORY_PENALTIES = [1, 2, 4, 8, 16, 32]
+NEAR_BOUNDARY_WINDOW = 2
+TOP_JUMP_COUNT = 30
+CHAPTER_REPORT_PATH = "subchapter_report.txt"
+
+def load_chapter_boundaries():
+    if not os.path.exists(CHAPTER_REPORT_PATH):
+        print(f"\nNo chapter file found at '{CHAPTER_REPORT_PATH}'.")
+        print("Expected one line per chapter, formatted as [chapter_number]word_count,segment_count")
+        print("Example: [1]2252,5")
+        print("Proceeding without existing chapter boundaries.\n")
+        return []
+    with open(CHAPTER_REPORT_PATH, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+    segment_counts = []
+    for line in lines:
+        close_bracket = line.index("]")
+        rest = line[close_bracket + 1:]
+        words_str, segs_str = rest.split(",")
+        segment_counts.append(int(segs_str))
+    boundaries = []
+    cumulative = 0
+    for count in segment_counts[:-1]:
+        cumulative += count
+        boundaries.append(cumulative)
+    return boundaries
+
+def compute_adjacent_distances(embeddings):
+    return np.linalg.norm(embeddings[1:] - embeddings[:-1], axis=1)
+
+def print_distance_stats(diffs):
+    print(f"\nadjacent-segment distance stats over {len(diffs)} pairs:")
+    print(f"min {diffs.min():.4f}  max {diffs.max():.4f}  mean {diffs.mean():.4f}  std {diffs.std():.4f}")
+
+def percentile_rank(value, population):
+    return float((population < value).sum()) / len(population) * 100.0
+
+def is_near_existing_boundary(segment_index, existing_boundaries):
+    for b in existing_boundaries:
+        if abs(segment_index - b) <= NEAR_BOUNDARY_WINDOW:
+            return True
+    return False
+
+def print_top_jumps(segments, diffs, existing_boundaries):
+    print(f"\ntop {TOP_JUMP_COUNT} largest meaning-shifts in the book (boundary is before the listed segment):\n")
+    order = np.argsort(diffs)[::-1][:TOP_JUMP_COUNT]
+    for idx in sorted(order):
+        segment_index = idx + 1
+        distance = diffs[idx]
+        pct = percentile_rank(distance, diffs)
+        near = "existing chapter break nearby" if is_near_existing_boundary(segment_index, existing_boundaries) else "NOT near an existing chapter break"
+        before_snippet = segments[segment_index - 1][-50:].replace("\n", " ")
+        after_snippet = segments[segment_index][:50].replace("\n", " ")
+        print(f"segment {segment_index:>4}  distance {distance:.4f}  (top {100 - pct:.1f}% of all gaps)  [{near}]")
+        print(f"    ...{before_snippet} || {after_snippet}...")
+
+def print_existing_boundary_report(segments, diffs, existing_boundaries):
+    if not existing_boundaries:
+        return
+    print(f"\nhow your {len(existing_boundaries)} existing chapter boundaries look in the distance signal:\n")
+    ranked_positions = []
+    for b in existing_boundaries:
+        distance = diffs[b - 1]
+        pct = percentile_rank(distance, diffs)
+        ranked_positions.append((b, distance, pct))
+    ranked_positions.sort(key=lambda x: x[1])
+    weak_count = sum(1 for _, _, pct in ranked_positions if pct < 50.0)
+    print(f"{weak_count} of {len(existing_boundaries)} existing boundaries sit below the median adjacent-distance ")
+    print("(meaning the model sees less of a topic shift there than at a typical adjacent-segment pair)\n")
+    print("weakest existing boundaries (candidates to reconsider or merge):")
+    for b, distance, pct in ranked_positions[:15]:
+        before_snippet = segments[b - 1][-50:].replace("\n", " ")
+        after_snippet = segments[b][:50].replace("\n", " ")
+        print(f"  segment {b:>4}  distance {distance:.4f}  (top {100 - pct:.1f}% of all gaps)")
+        print(f"    ...{before_snippet} || {after_snippet}...")
+
+def run_exploratory_pelt(embeddings, existing_boundaries):
+    algo = rpt.Pelt(model="l2", min_size=MIN_SEGMENT_SIZE, jump=1)
+    algo.fit(embeddings)
+    print("\nexploratory PELT boundaries at a few sensitivities (not tuned to match your chapters):\n")
+    for penalty in EXPLORATORY_PENALTIES:
+        breakpoints = algo.predict(pen=penalty)
+        if breakpoints and breakpoints[-1] == len(embeddings):
+            breakpoints = breakpoints[:-1]
+        near_existing = sum(1 for b in breakpoints if is_near_existing_boundary(b, existing_boundaries))
+        away_from_existing = len(breakpoints) - near_existing
+        print(f"penalty {penalty:>4}: {len(breakpoints):>4} boundaries, {near_existing} near an existing chapter break, {away_from_existing} elsewhere")
+
+def main():
+    segments, embeddings = get_segments_and_embeddings()
+    if len(segments) < MIN_SEGMENT_SIZE * 2:
+        print(f"Need at least {MIN_SEGMENT_SIZE * 2} segments to analyze meaning shifts.")
+        return
+    existing_boundaries = load_chapter_boundaries()
+    diffs = compute_adjacent_distances(embeddings)
+    print_distance_stats(diffs)
+    print_top_jumps(segments, diffs, existing_boundaries)
+    print_existing_boundary_report(segments, diffs, existing_boundaries)
+    run_exploratory_pelt(embeddings, existing_boundaries)
+
+if __name__ == "__main__":
+    main()

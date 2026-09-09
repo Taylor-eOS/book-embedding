@@ -1,21 +1,13 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from embedding_cache import get_segments_and_embeddings
 
-input_path = "input.txt"
-model_name = "Qwen/Qwen3-Embedding-0.6B"
 context_size = 3
-SPLIT_ON = "\n\n"
-BATCH_SIZE = 8
 
 def main():
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-    segments = [s.strip() for s in text.split(SPLIT_ON) if s.strip()]
+    segments, embeddings = get_segments_and_embeddings()
     if len(segments) < context_size + 1:
         print(f"Need at least {context_size + 1} segments to compare.")
         return
-    model = SentenceTransformer(model_name, device="cpu")
-    embeddings = model.encode(segments, normalize_embeddings=True, show_progress_bar=True, batch_size=BATCH_SIZE)
     scores = []
     indices = []
     for i in range(context_size, len(segments)):
