@@ -1,8 +1,9 @@
 import numpy as np
 import pygame
 from sklearn.manifold import TSNE
-from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist, squareform
 
 cache_path = "embedding_cache.npz"
 window_width = 1200
@@ -11,9 +12,11 @@ icon_font_size = 13
 icon_padding = 4
 label_max_words = 12
 font_size = 14
-tsne_perplexity = 6
-min_clusters = 6
-max_clusters = 24
+min_clusters = 2
+max_clusters_fraction = 0.15
+initial_clusters_fraction = 0.05
+neighbor_lines_per_point = 3
+neighbor_line_max_alpha = 140
 
 cluster_palette = [
     (230, 90, 70),
@@ -48,43 +51,65 @@ def load_cache():
     embeddings = data["embeddings"]
     return segments, embeddings
 
-def reduce_to_2d(embeddings):
+def compute_cosine_distance_matrix(embeddings):
+    distances = pdist(embeddings, metric="cosine")
+    return squareform(distances)
+
+def reduce_to_2d(embeddings, distance_matrix):
     n_samples = embeddings.shape[0]
-    perplexity = min(tsne_perplexity, max(5, n_samples - 1))
-    reducer = TSNE(n_components=2, perplexity=perplexity, metric="cosine", init="pca", random_state=0)
-    coords = reducer.fit_transform(embeddings)
+    perplexity = max(5, min(30, n_samples // 3))
+    perplexity = min(perplexity, n_samples - 1)
+    reducer = TSNE(n_components=2, perplexity=perplexity, metric="precomputed", init="random", random_state=0)
+    coords = reducer.fit_transform(distance_matrix)
     return coords
 
-def choose_cluster_count(embeddings):
-    n_samples = embeddings.shape[0]
-    lower = min(min_clusters, n_samples - 1)
-    upper = min(max_clusters, n_samples - 1)
-    if upper < lower:
-        return lower
-    best_k = lower
+def choose_initial_cluster_count(distance_matrix, linkage_matrix, n_samples):
+    upper = max(min_clusters + 1, int(n_samples * max_clusters_fraction))
+    upper = min(upper, n_samples - 1)
+    target = max(min_clusters, int(n_samples * initial_clusters_fraction))
+    target = min(target, upper)
+    search_low = max(min_clusters, target - 5)
+    search_high = min(upper, target + 5)
+    best_k = target
     best_score = -1.0
-    for k in range(lower, upper + 1):
-        kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
-        labels = kmeans.fit_predict(embeddings)
-        score = silhouette_score(embeddings, labels, metric="cosine")
+    for k in range(search_low, search_high + 1):
+        labels = fcluster(linkage_matrix, t=k, criterion="maxclust")
+        if len(set(labels)) < 2:
+            continue
+        score = silhouette_score(distance_matrix, labels, metric="precomputed")
         if score > best_score:
             best_score = score
             best_k = k
     return best_k
 
-def compute_clusters(embeddings):
-    k = choose_cluster_count(embeddings)
-    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
-    labels = kmeans.fit_predict(embeddings)
-    return labels, k
+def compute_linkage(embeddings):
+    return linkage(embeddings, method="ward")
+
+def clusters_for_k(linkage_matrix, k):
+    labels = fcluster(linkage_matrix, t=k, criterion="maxclust")
+    labels = labels - labels.min()
+    return labels, len(set(labels))
+
+def compute_max_cluster_count(n_samples):
+    upper = max(min_clusters + 1, int(n_samples * max_clusters_fraction))
+    upper = min(upper, n_samples - 1)
+    return upper
+
+def compute_nearest_neighbors(distance_matrix, k):
+    n_samples = distance_matrix.shape[0]
+    neighbor_lists = []
+    for i in range(n_samples):
+        row = distance_matrix[i].copy()
+        row[i] = np.inf
+        nearest = np.argsort(row)[:k]
+        neighbor_lists.append(list(nearest))
+    return neighbor_lists
 
 def make_labels(segments):
     labels = []
     for s in segments:
         words = s.split()
         label = " ".join(words[:label_max_words])
-        if len(words) > label_max_words:
-            label += "..."
         labels.append(label)
     return labels
 
@@ -126,9 +151,31 @@ def measure_icon_sizes(icon_font, n_points):
     box_h = digit_h + icon_padding * 2
     return [(box_w, box_h) for _ in range(n_points)]
 
-def draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon_sizes, scale, offset_x, offset_y, pan_x, pan_y, zoom, hover_index, selected_index, cluster_count):
+def draw_neighbor_lines_batched(screen, screen_points, neighbor_lists, distance_matrix, highlight_index):
+    overlay = pygame.Surface((window_width, window_height), pygame.SRCALPHA)
+    max_dist = distance_matrix.max()
+    if max_dist <= 0:
+        max_dist = 1.0
+    indices_to_draw = range(len(screen_points)) if highlight_index is None else [highlight_index]
+    for i in indices_to_draw:
+        for j in neighbor_lists[i]:
+            d = distance_matrix[i][j]
+            closeness = 1.0 - min(d / max_dist, 1.0)
+            alpha = int(neighbor_line_max_alpha * closeness)
+            if alpha <= 0:
+                continue
+            color = (255, 255, 255, alpha) if highlight_index is None else (255, 255, 0, alpha)
+            pygame.draw.line(overlay, color, screen_points[i], screen_points[j], 1)
+    screen.blit(overlay, (0, 0))
+
+def draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon_sizes, scale, offset_x, offset_y, pan_x, pan_y, zoom, hover_index, selected_index, cluster_count, silhouette, neighbor_lists, distance_matrix, show_all_lines):
     screen.fill((15, 15, 20))
     screen_points = [to_screen(p, scale, offset_x, offset_y, pan_x, pan_y, zoom) for p in coords]
+    highlight_index = selected_index if selected_index is not None else hover_index
+    if show_all_lines:
+        draw_neighbor_lines_batched(screen, screen_points, neighbor_lists, distance_matrix, None)
+    elif highlight_index is not None:
+        draw_neighbor_lines_batched(screen, screen_points, neighbor_lists, distance_matrix, highlight_index)
     for i, (sx, sy) in enumerate(screen_points):
         box_w, box_h = icon_sizes[i]
         if i == hover_index:
@@ -145,7 +192,7 @@ def draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon
         screen.blit(number_surface, number_rect)
     if selected_index is not None:
         sx, sy = screen_points[selected_index]
-        label_text = f"{selected_index}: {labels[selected_index]}"
+        label_text = f"{labels[selected_index]}"
         text_surface = font.render(label_text, True, (255, 255, 255))
         box_rect = text_surface.get_rect()
         box_x = min(max(sx + 12, 0), window_width - box_rect.width - 10)
@@ -154,20 +201,31 @@ def draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon
         pygame.draw.rect(screen, (30, 30, 40), background_rect)
         pygame.draw.rect(screen, (255, 255, 0), background_rect, 1)
         screen.blit(text_surface, (box_x, box_y))
-    hint_surface = small_font.render(f"clusters: {cluster_count}   click a point for text, drag to pan, scroll to zoom, R to reset", True, (140, 140, 140))
+        neighbor_text = "nearest: " + ", ".join(str(n) for n in neighbor_lists[selected_index])
+        neighbor_surface = small_font.render(neighbor_text, True, (200, 200, 200))
+        screen.blit(neighbor_surface, (box_x, box_y + box_rect.height + 6))
+    hint_text = f"clusters: {cluster_count} (silhouette {silhouette:.3f})   +/- to change cluster count, click a point for text and neighbors, drag to pan, scroll to zoom, L to toggle all links, R to reset"
+    hint_surface = small_font.render(hint_text, True, (140, 140, 140))
     screen.blit(hint_surface, (10, window_height - 20))
     pygame.display.flip()
 
 def run_visualizer():
     segments, embeddings = load_cache()
-    coords = reduce_to_2d(embeddings)
-    cluster_ids, cluster_count = compute_clusters(embeddings)
+    distance_matrix = compute_cosine_distance_matrix(embeddings)
+    coords = reduce_to_2d(embeddings, distance_matrix)
+    linkage_matrix = compute_linkage(embeddings)
+    n_samples = embeddings.shape[0]
+    max_k = compute_max_cluster_count(n_samples)
+    current_k = choose_initial_cluster_count(distance_matrix, linkage_matrix, n_samples)
+    cluster_ids, cluster_count = clusters_for_k(linkage_matrix, current_k)
+    silhouette = silhouette_score(distance_matrix, cluster_ids, metric="precomputed")
+    neighbor_lists = compute_nearest_neighbors(distance_matrix, neighbor_lines_per_point)
     labels = make_labels(segments)
     colors = [color_for_cluster(c) for c in cluster_ids]
     scale, offset_x, offset_y = compute_view_transform(coords, window_width, window_height)
     pygame.init()
     screen = pygame.display.set_mode((window_width, window_height))
-    pygame.display.set_caption("Segment embedding space (t-SNE cosine layout, k-means clusters)")
+    pygame.display.set_caption("Segment embedding space (t-SNE cosine layout, hierarchical clusters)")
     font = pygame.font.SysFont("monospace", font_size)
     small_font = pygame.font.SysFont("monospace", 11)
     icon_font = pygame.font.SysFont("monospace", icon_font_size, bold=True)
@@ -178,6 +236,7 @@ def run_visualizer():
     last_mouse_pos = (0, 0)
     hover_index = None
     selected_index = None
+    show_all_lines = False
     clock = pygame.time.Clock()
     running = True
     while running:
@@ -188,8 +247,20 @@ def run_visualizer():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r:
                     pan_x, pan_y, zoom = 0.0, 0.0, 1.0
+                elif event.key == pygame.K_l:
+                    show_all_lines = not show_all_lines
                 elif event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    current_k = min(current_k + 1, max_k)
+                    cluster_ids, cluster_count = clusters_for_k(linkage_matrix, current_k)
+                    silhouette = silhouette_score(distance_matrix, cluster_ids, metric="precomputed")
+                    colors = [color_for_cluster(c) for c in cluster_ids]
+                elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    current_k = max(current_k - 1, min_clusters)
+                    cluster_ids, cluster_count = clusters_for_k(linkage_matrix, current_k)
+                    silhouette = silhouette_score(distance_matrix, cluster_ids, metric="precomputed")
+                    colors = [color_for_cluster(c) for c in cluster_ids]
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     dragging = True
@@ -210,9 +281,10 @@ def run_visualizer():
             elif event.type == pygame.MOUSEWHEEL:
                 zoom_factor = 1.1 if event.y > 0 else (1 / 1.1)
                 zoom *= zoom_factor
-        draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon_sizes, scale, offset_x, offset_y, pan_x, pan_y, zoom, hover_index, selected_index, cluster_count)
+        draw_scene(screen, font, small_font, icon_font, coords, labels, colors, icon_sizes, scale, offset_x, offset_y, pan_x, pan_y, zoom, hover_index, selected_index, cluster_count, silhouette, neighbor_lists, distance_matrix, show_all_lines)
         clock.tick(60)
     pygame.quit()
 
 if __name__ == "__main__":
     run_visualizer()
+
