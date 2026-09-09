@@ -1,3 +1,4 @@
 pysbd
 sentence-transformers
 ruptures
+pygame
