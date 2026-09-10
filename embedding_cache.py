@@ -1,5 +1,4 @@
 import os
-import hashlib
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -8,11 +7,6 @@ model_name = "Qwen/Qwen3-Embedding-0.6B"
 SPLIT_ON = "\n\n"
 BATCH_SIZE = 16
 cache_path = "embedding_cache.npz"
-
-def compute_input_hash():
-    with open(input_path, "rb") as f:
-        data = f.read()
-    return hashlib.sha256(data).hexdigest()
 
 def load_segments():
     with open(input_path, "r", encoding="utf-8") as f:
@@ -24,12 +18,6 @@ def load_cached():
     if not os.path.exists(cache_path):
         return None
     cached = np.load(cache_path, allow_pickle=True)
-    if str(cached["input_hash"]) != compute_input_hash():
-        return None
-    if str(cached["model_name"]) != model_name:
-        return None
-    if str(cached["split_on"]) != SPLIT_ON:
-        return None
     segments = list(cached["segments"])
     embeddings = cached["embeddings"]
     return segments, embeddings
@@ -39,9 +27,6 @@ def save_cache(segments, embeddings):
         cache_path,
         segments=np.array(segments, dtype=object),
         embeddings=embeddings,
-        input_hash=compute_input_hash(),
-        model_name=model_name,
-        split_on=SPLIT_ON,
     )
 
 def embed_segments_whole(segments, model):

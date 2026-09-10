@@ -4,6 +4,7 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import pdist, squareform
+import colorsys
 
 cache_path = "embedding_cache.npz"
 window_width = 1200
@@ -17,33 +18,6 @@ max_clusters_fraction = 0.15
 initial_clusters_fraction = 0.05
 neighbor_lines_per_point = 3
 neighbor_line_max_alpha = 140
-
-cluster_palette = [
-    (230, 90, 70),
-    (70, 150, 230),
-    (90, 200, 120),
-    (230, 190, 70),
-    (180, 90, 220),
-    (70, 210, 210),
-    (230, 130, 180),
-    (150, 150, 90),
-    (240, 150, 60),
-    (110, 110, 230),
-    (200, 200, 200),
-    (100, 200, 160),
-    (220, 100, 140),
-    (140, 180, 230),
-    (190, 140, 90),
-    (120, 220, 80),
-    (210, 70, 130),
-    (80, 130, 100),
-    (240, 200, 140),
-    (160, 100, 200),
-    (60, 180, 230),
-    (200, 150, 60),
-    (100, 100, 160),
-    (220, 220, 90),
-]
 
 def load_cache():
     data = np.load(cache_path, allow_pickle=True)
@@ -114,7 +88,10 @@ def make_labels(segments):
     return labels
 
 def color_for_cluster(cluster_id):
-    return cluster_palette[cluster_id % len(cluster_palette)]
+    golden = 0.6180339887498949
+    hue = (cluster_id * golden) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.72, 0.88)
+    return (int(r * 255), int(g * 255), int(b * 255))
 
 def compute_view_transform(coords, width, height, padding=60):
     min_x, min_y = coords.min(axis=0)

@@ -13,18 +13,16 @@ CHAPTER_REPORT_PATH = "subchapter_report.txt"
 def load_chapter_boundaries():
     if not os.path.exists(CHAPTER_REPORT_PATH):
         print(f"\nNo chapter file found at '{CHAPTER_REPORT_PATH}'.")
-        print("Expected one line per chapter, formatted as [chapter_number]word_count,segment_count")
-        print("Example: [1]2252,5")
+        print("Expected one line per chapter, containing the segment count as the last number on the line.")
+        print("Example: 5")
         print("Proceeding without existing chapter boundaries.\n")
         return []
     with open(CHAPTER_REPORT_PATH, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
     segment_counts = []
     for line in lines:
-        close_bracket = line.index("]")
-        rest = line[close_bracket + 1:]
-        words_str, segs_str = rest.split(",")
-        segment_counts.append(int(segs_str))
+        tokens = line.replace(",", " ").split()
+        segment_counts.append(int(tokens[-1]))
     boundaries = []
     cumulative = 0
     for count in segment_counts[:-1]:
