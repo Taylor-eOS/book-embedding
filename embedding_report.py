@@ -1,34 +1,51 @@
 import os
 import numpy as np
 import ruptures as rpt
-from embedding_cache import get_segments_and_embeddings
+from embedding_cache import get_segments_and_embeddings, input_path, SPLIT_ON
 
 MIN_SEGMENT_SIZE = 2
 EXPLORATORY_PENALTIES = [1, 2, 4, 8, 16, 32]
 NEAR_BOUNDARY_WINDOW = 2
 TOP_JUMP_COUNT = 30
 TOP_ELSEWHERE_COUNT = 8
-CHAPTER_REPORT_PATH = "subchapter_report.txt"
+CHAPTER_MARKER = SPLIT_ON + " "
 
-def load_chapter_boundaries():
-    if not os.path.exists(CHAPTER_REPORT_PATH):
-        print(f"\nNo chapter file found at '{CHAPTER_REPORT_PATH}'.")
-        print("Expected one line per chapter, containing the segment count as the last number on the line.")
-        print("Example: 5")
+def detect_chapter_boundaries(total_segments):
+    if not os.path.exists(input_path):
+        print(f"\nNo input file found at '{input_path}'.")
         print("Proceeding without existing chapter boundaries.\n")
         return []
-    with open(CHAPTER_REPORT_PATH, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    segment_counts = []
-    for line in lines:
-        tokens = line.replace(",", " ").split()
-        segment_counts.append(int(tokens[-1]))
+    with open(input_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    raw_pieces = text.split(SPLIT_ON)
     boundaries = []
-    cumulative = 0
-    for count in segment_counts[:-1]:
-        cumulative += count
-        boundaries.append(cumulative)
-    return boundaries
+    segment_count = 0
+    for i, piece in enumerate(raw_pieces[:-1]):
+        if not piece.strip():
+            continue
+        segment_count += 1
+        next_piece = raw_pieces[i + 1]
+        if next_piece.startswith(" ") and next_piece.strip():
+            boundaries.append(segment_count)
+    return curate_chapter_boundaries(boundaries, total_segments)
+
+def curate_chapter_boundaries(boundaries, total_segments):
+    curated = []
+    seen = set()
+    previous = 0
+    for b in boundaries:
+        if b in seen:
+            raise ValueError(f"duplicate chapter boundary at segment {b}")
+        if b <= previous:
+            raise ValueError(f"chapter boundary at segment {b} is not strictly after the previous boundary at {previous}")
+        if b >= total_segments:
+            raise ValueError(f"chapter boundary at segment {b} falls at or beyond the last segment ({total_segments - 1})")
+        seen.add(b)
+        curated.append(b)
+        previous = b
+    print(f"\ndetected {len(curated)} chapter boundaries from '{input_path}' via the '{CHAPTER_MARKER!r}' marker, verified against {total_segments} segments:")
+    print(", ".join(str(b) for b in curated))
+    return curated
 
 def compute_adjacent_distances(embeddings):
     return np.linalg.norm(embeddings[1:] - embeddings[:-1], axis=1)
@@ -125,7 +142,7 @@ def main():
     if len(segments) < MIN_SEGMENT_SIZE * 2:
         print(f"Need at least {MIN_SEGMENT_SIZE * 2} segments to analyze meaning shifts.")
         return
-    existing_boundaries = load_chapter_boundaries()
+    existing_boundaries = detect_chapter_boundaries(len(segments))
     diffs = compute_adjacent_distances(embeddings)
     print_distance_stats(diffs)
     print_top_jumps(segments, diffs, existing_boundaries)
