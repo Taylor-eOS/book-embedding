@@ -3,10 +3,14 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 input_path = "input.txt"
-model_name = "Qwen/Qwen3-Embedding-0.6B"
+#model_name = "Qwen/Qwen3-Embedding-0.6B"
+#model_name = "jinaai/jina-embeddings-v5-text-small"
+model_name = "google/embeddinggemma-300m"
 SPLIT_ON = "\n\n"
 BATCH_SIZE = 16
 cache_path = "embedding_cache.npz"
+TRUST_CODE = False
+TOKEN_VAR = os.environ.get("HF_TOKEN")
 
 def load_segments():
     with open(input_path, "r", encoding="utf-8") as f:
@@ -44,7 +48,8 @@ def get_segments_and_embeddings():
         print("Loaded segments and embeddings from cache.")
         return cached
     segments = load_segments()
-    model = SentenceTransformer(model_name, device="cpu")
+    hf_token = TOKEN_VAR
+    model = SentenceTransformer(model_name, device="cpu", trust_remote_code=TRUST_CODE)
     embeddings = embed_segments_whole(segments, model)
     save_cache(segments, embeddings)
     print("Computed segments and embeddings, saved to cache.")
